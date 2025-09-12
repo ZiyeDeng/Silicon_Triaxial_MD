@@ -1,18 +1,30 @@
+#############################################################################################################################
+# LAMMPS input script for simulating triaxial loading of a silicon nanoparticle                                              #
+#                                                                                                                           #
+# Authors: Ziye Deng, Reza Namakian (https://gao.engr.tamu.edu/)                                                            #
+#                                                                                                                           #
+# Notes:                                                                                                                    #
+# - The specific interatomic potential is not specified; you may substitute the potential of your choice.                   #
+# - The loading protocol includes an initial relaxation step, followed by loading using six rigid plane indenters provided   #
+#   in LAMMPS.
+# - The unloading process is similar to the loading process. By changing the direction of indenders, unloading process is 
+#   conducted                                                                                                                          #
+# For questions or further information, please contact:                                                                     #
+# Dr. Wei Gao (wei.gao@tamu.edu)                                                                                            #
+#############################################################################################################################
+# Set units to metal
 units metal
 dimension 3
+# Set shrink boundary conditions in all directions
 boundary s s s
 atom_style atomic
-
 # Read in data files
-read_data 
-read_restart 
-
+read_data Si.lmp
 reset_timestep 0 time 0
 
+# Define pair interactions
 pair_style 
 pair_coeff * * 
-
-change_box all boundary s s s
 
 # Define simulation variables
 variable step equal step
@@ -34,13 +46,41 @@ variable lz equal lz
 variable Dt equal dt
 variable time equal time
 
+# Define the number of timesteps for relaxation and indentation
 variable RunNVE equal 
 variable RunIndent equal 
 
 compute PE_Atom all pe/atom
 compute PE_Atoms all reduce sum c_PE_Atom
+# Define stress per atom without thermal stress correction
 compute Sigma all stress/atom NULL
-compute Stress all reduce sum c_Sigma[3]
+# Define Voronoi compute to get per-atom volumes
+compute myVoronoi all voronoi/atom
+
+# Convert stress per atom from stress*volume to pressure by dividing by Voronoi volume
+#convert the bar to Gpa
+variable stress_x atom c_Sigma[1]/c_myVoronoi[1]/10000
+variable stress_y atom c_Sigma[2]/c_myVoronoi[1]/10000
+variable stress_z atom c_Sigma[3]/c_myVoronoi[1]/10000
+variable stress_xy atom c_Sigma[4]/c_myVoronoi[1]/10000
+variable stress_xz atom c_Sigma[5]/c_myVoronoi[1]/10000
+variable stress_yz atom c_Sigma[6]/c_myVoronoi[1]/10000
+
+# Compute total (global) stress components by summing per-atom stress variables
+compute StressX all reduce sum v_stress_x
+compute StressY all reduce sum v_stress_y
+compute StressZ all reduce sum v_stress_z
+compute StressXY all reduce sum v_stress_xy
+compute StressXZ all reduce sum v_stress_xz
+compute StressYZ all reduce sum v_stress_yz
+
+# Define equal-style variables to access computed results
+variable StressX equal c_StressX
+variable StressY equal c_StressY
+variable StressZ equal c_StressZ
+variable StressXY equal c_StressXY
+variable StressXZ equal c_StressXZ
+variable StressYZ equal c_StressYZ
 
 # Time step and thermo settings
 timestep 0.001
@@ -50,16 +90,34 @@ thermo_modify flush yes
 
 # Fixes and settings
 fix Ave all ave/time 10 100 1000 v_temp v_pe v_etotal v_enthalpy v_press v_vol v_pxx v_pyy v_pzz v_pxy v_pxz v_pyz v_lx v_ly v_lz file thermo_averages_beforeindent.txt
-
-
 dump 1 all custom 1000 before.indent.dump id type x y z c_PE_Atom fx fy fz
+
+# Fixes and settings
+fix Balance all balance 2500 1.0 shift xyz 10 1.1 weight time 0.1 weight neigh 1.2
+
+# Optional fix (commented out)
+fix Momentum all momentum 500 linear 1 1 1 angular
+
+# Corrected: Changed dump IDs to be unique
+dump 1 all custom 1000 before.indent.dump id type x y z c_PE_Atom fx fy fz v_stress_x v_stress_y v_stress_z v_stress_xy v_stress_xz v_stress_yz
 
 # Run for setup
 run 0 post no
+
+
+# Save restart files 
 restart 1000 beforeindent.restart.A beforeindent.restart.B
 
 fix 1 all nve
 fix 2 all temp/csvr 300.0 300.0 $(100*dt) 54324
+
+# Define box boundary variables
+variable x0 equal $(xhi)
+variable y0 equal $(yhi)
+variable z0 equal $(zhi)
+variable xl equal $(xlo)
+variable yl equal $(ylo)
+variable zl equal $(zlo)
 
 # Define indenter planes along all three directions
 fix 3 all indent 1000.0 plane z $(zhi+0.01) hi
@@ -68,11 +126,18 @@ fix 7 all indent 1000.0 plane y $(yhi+0.01) hi
 fix 8 all indent 1000.0 plane y $(ylo-0.01) lo
 fix 9 all indent 1000.0 plane x $(xhi+0.01) hi
 fix 10 all indent 1000.0 plane x $(xlo-0.01) lo
+fix_modify 3 energy yes
+fix_modify 4 energy yes
+fix_modify 7 energy yes
+fix_modify 8 energy yes
+fix_modify 9 energy yes
+fix_modify 10 energy yes
 
 # Run initial equilibration
 run ${RunNVE}
 
 # Unfix unnecessary settings before main run
+
 unfix 2
 unfix 3
 unfix 4
@@ -81,7 +146,6 @@ unfix 8
 unfix 9
 unfix 10
 unfix Ave
-unfix Dt
 restart 0
 undump 1
 
@@ -90,13 +154,15 @@ reset_timestep 0 time 0
 timestep 0.001
 
 # Stress tensor output for stress visualization
-dump 1 all custom 1000 indent.dump id type x y z c_PE_Atom fx fy fz c_Sigma[1] c_Sigma[2] c_Sigma[3] c_Sigma[4] c_Sigma[5] c_Sigma[6]
+dump 1 all custom 1000 indent.dump id type x y z c_PE_Atom fx fy fz v_stress_x v_stress_y v_stress_z v_stress_xy v_stress_xz v_stress_yz
 
 restart 1000 indent.restart.A indent.restart.B
 
 # Run with indenter planes and displacement controls
 run 0 post no
 
+fix 2 all temp/csvr 300.0 300.0 $(100*dt) 54324
+# Update the boundary
 variable x0 equal $(xhi)
 variable y0 equal $(yhi)
 variable z0 equal $(zhi)
@@ -107,44 +173,29 @@ variable zl equal $(zlo)
 variable indenter_vel equal -0.05
 variable indenter_velo equal 0.05
 
+# Define the variables updating the location of indenters
 variable z equal "z0 + indenter_vel*elaplong*dt"
 variable z equal vdisplace(${z0},${indenter_vel})
-
 variable zw equal "zl - indenter_velo*elaplong*dt"
 variable zw equal vdisplace(${zl},${indenter_velo})
-
 variable y equal "y0 + indenter_vel*elaplong*dt"
 variable y equal vdisplace(${y0},${indenter_vel})
-
 variable yw equal "yl - indenter_velo*elaplong*dt"
 variable yw equal vdisplace(${yl},${indenter_velo})
-
 variable x equal "x0 + indenter_vel*elaplong*dt"
 variable x equal vdisplace(${x0},${indenter_vel})
-
 variable xw equal "xl - indenter_velo*elaplong*dt"
 variable xw equal vdisplace(${xl},${indenter_velo})
 
 
-
-# Define initial dimensions and normalized variables
-variable Lx0 equal ${lx}
-variable Ly0 equal ${ly}
-variable Lz0 equal ${lz}
-
-variable Lx_norm equal "lx/v_Lx0"
-variable Ly_norm equal "ly/v_Ly0"
-variable Lz_norm equal "lz/v_Lz0"
-
-# Define true strain for all three directions
-variable true_strain_x equal "abs(ln(v_Lx_norm))*100"
-variable true_strain_y equal "abs(ln(v_Ly_norm))*100"
-variable true_strain_z equal "abs(ln(v_Lz_norm))*100"
-
-# Define true stress for all three directions
+# Define true stress for all six directions
 variable true_stress_x equal "abs(f_9[1])/ly/lz*160.21766208"  # x-direction stress
+variable true_stress_xl equal "abs(f_10[1])/ly/lz*160.21766208"  # x-direction stress
 variable true_stress_y equal "abs(f_7[2])/lx/lz*160.21766208"  # y-direction stress
+variable true_stress_yl equal "abs(f_8[2])/lx/lz*160.21766208"  # y-direction stress
 variable true_stress_z equal "abs(f_3[3])/lx/ly*160.21766208"  # z-direction stress
+variable true_stress_zl equal "abs(f_4[3])/lx/ly*160.21766208"  # z-direction stress
+
 
 # Reapply temperature control and indenter planes
 fix 2 all temp/csvr 300.0 300.0 $(100*dt) 54324
@@ -155,12 +206,13 @@ fix 8 all indent 1000.0 plane y v_yw lo
 fix 9 all indent 1000.0 plane x v_x hi
 fix 10 all indent 1000.0 plane x v_xw lo  
 
-# Output stress and strain information for x, y, and z directions
-fix 5 all print 100 "$(v_step:%20.16g) $(v_Dt:%20.16g) $(v_time:%20.16g) $(v_true_strain_x:%20.16g) $(v_true_stress_x:%20.16g) $(v_true_strain_y:%20.16g) $(v_true_stress_y:%20.16g) $(v_true_strain_z:%20.16g) $(v_true_stress_z:%20.16g) $(f_3[1]:%20.16g) $(f_3[2]:%20.16g) $(f_3[3]:%20.16g) $(f_7[2]:%20.16g) $(f_9[1]:%20.16g) $(v_pxx:%20.16g) $(v_pyy:%20.16g) $(v_pzz:%20.16g) $(v_pyz:%20.16g) $(v_pxz:%20.16g) $(v_pxy:%20.16g) $(v_lx:%20.16g) $(v_ly:%20.16g) $(v_lz:%20.16g) $(v_temp:%20.16g) $(v_pe:%20.16g) $(v_etotal:%20.16g) $(v_enthalpy:%20.16g)" file thermo_indent.txt screen no title "Step Timestep Time True_Strain_X True_Stress_X True_Strain_Y True_Stress_Y True_Strain_Z True_Stress_Z Fx_Indenter Fy_Indenter Fz_Indenter Fy_Indenter_H Fx_Indenter_H SigmaXX SigmaYY SigmaZZ SigmaYZ SigmaXZ SigmaXY LX LY LZ Temp PE Total Enthalpy"
-
+# Print out essential variables
+fix 5 all print 100 "${step} ${Dt} ${time} ${true_stress_x} ${true_stress_xl} ${true_stress_y} ${true_stress_yl} ${true_stress_z} ${true_stress_zl} ${pxx} ${pyy} ${pzz} ${pyz} ${pxz} ${pxy} ${StressX} ${StressY} ${StressZ} ${StressYZ} ${StressXZ} ${StressXY} ${lx} ${ly} ${lz} ${temp} ${pe} ${etotal} ${enthalpy}" file thermo_indent.txt screen no title "Step Timestep Time True_Stress_X True_Stress_Xl True_Stress_Y True_Stress_Yl True_Stress_Z True_Stress_Zl SigmaXX SigmaYY SigmaZZ SigmaYZ SigmaXZ SigmaXY StressX StressY StressZ StressYZ StressXZ StressXY Lx Ly Lz Temp PE Total Enthalpy"
+# Save the forces directly measured from indenters
 fix 11 all print 100 "$(f_3[3]:%20.16g) $(f_4[3]:%20.16g) $(f_7[2]:%20.16g) $(f_8[2]:%20.16g) $(f_9[1]:%20.16g) $(f_10[1]:%20.16g)" file Force_indent.txt screen no title "Fz_Indenter_H Fz_Indenter_L Fy_Indenter_H Fy_Indenter_L Fx_Indenter_H Fx_Indenter_L"
+# Use fix print to output the global stress components
+fix 12 all print 100 "Step: ${step}, Stress_X: ${StressX}, Stress_Y: ${StressY}, Stress_Z: ${StressZ}, Stress_XY: ${StressXY}, Stress_XZ: ${StressXZ}, Stress_YZ: ${StressYZ}" file stress_global.txt screen no
 
-fix 6 all halt 1 v_Lz_norm < 0.5 error continue message yes
 
 # Run the indentation simulation
 run ${RunIndent}
@@ -180,4 +232,9 @@ unfix 9
 unfix 10
 unfix 11
 restart 0
+
+# Save the restart or lmp file for unloading or further loading
+write_data Si_10nm.300K.indent.lmp
+write_restart Si_10nm.300K.indent.restart
+
 undump 1
